@@ -1,0 +1,22 @@
+{
+    "name": "jarir-ahmed/universal-spa",
+    "description": "A framework-agnostic Single Page Application (SPA) engine for PHP",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Jarir Ahmed",
+            "email": "hello@example.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "JarirAhmed\\UniversalSpa\\": "src/"
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
