@@ -5,62 +5,94 @@ namespace JarirAhmed\UniversalSpa;
 class SpaEngine
 {
     /**
-     * Start the SPA engine by capturing output buffer.
-     * This should be called at the very top of your PHP script or middleware.
+     * Start the SPA engine by capturing the output buffer.
+     * Call this at the very top of your PHP script or middleware.
      */
-    public static function start()
+    public static function start(): void
     {
-        ob_start(function ($html) {
+        ob_start(static function ($html) {
             return self::processOutput($html);
         });
     }
 
     /**
-     * Process the HTML output and return JSON if it's an SPA request.
+     * Output-buffer callback: when the request is an SPA request, replace the HTML
+     * body with the JSON payload; otherwise pass the HTML through unchanged.
      */
     protected static function processOutput($html)
     {
-        // Check if this is an SPA request via the custom header
-        $isSpaRequest = isset($_SERVER['HTTP_X_FRONTEND_SPA']) && $_SERVER['HTTP_X_FRONTEND_SPA'] === 'true';
+        $isSpaRequest = isset($_SERVER['HTTP_X_FRONTEND_SPA'])
+            && $_SERVER['HTTP_X_FRONTEND_SPA'] === 'true';
 
         if (!$isSpaRequest) {
             return $html;
         }
 
-        // We are in 'json' mode. Extract title, content, style, script
-        $content = '';
-        $start = strpos($html, 'data-spa-content');
-        if ($start !== false) {
-            // Find the opening tag containing data-spa-content
-            $openTag = strrpos(substr($html, 0, $start), '<');
-            preg_match('/<(\w+)\s[^>]*data-spa-content/', substr($html, $openTag), $tagNameMatch);
-            $tagName = $tagNameMatch[1] ?? 'div';
-            $innerStart = strpos($html, '>', $start) + 1;
-            $innerEnd = strrpos($html, '</' . $tagName . '>');
-            if ($innerStart && $innerEnd) {
-                $content = trim(substr($html, $innerStart, $innerEnd - $innerStart));
-            }
+        if (!headers_sent()) {
+            header('Content-Type: application/json');
         }
 
-        // Extract styles marked with data-spa-style
-        preg_match_all('/<style(?![^>]*data-spa-layout-style)[^>]*>.*?<\/style>/si', $html, $styleMatches);
-        $style = implode("\n", $styleMatches[0] ?? []);
+        return json_encode(self::toSpaPayload($html));
+    }
 
-        // Extract scripts
-        preg_match_all('/<script(?![^>]*data-spa-layout-script)(?![^>]*\bsrc=)[^>]*>.*?<\/script>/si', $html, $scriptMatches);
-        $script = implode("\n", $scriptMatches[0] ?? []);
+    /**
+     * Parse a full HTML document into the SPA payload using a real DOM parser
+     * (robust against nested tags, unlike string/regex scanning).
+     *
+     *  - content: inner HTML of the first element carrying [data-spa-content]
+     *  - style:   inline <style> blocks not marked data-spa-layout-style
+     *  - script:  inline <script> blocks (no src) not marked data-spa-layout-script
+     *  - title:   text of <title>
+     *
+     * @return array{title:string,style:string,content:string,script:string}
+     */
+    public static function toSpaPayload(string $html): array
+    {
+        $payload = ['title' => '', 'style' => '', 'content' => '', 'script' => ''];
 
-        // Extract title
-        preg_match('/<title>(.*?)<\/title>/si', $html, $titleMatch);
-        $title = strip_tags($titleMatch[1] ?? '');
+        if (trim($html) === '') {
+            return $payload;
+        }
 
-        // Output JSON instead of HTML
-        header('Content-Type: application/json');
-        return json_encode([
-            'title'   => $title,
-            'style'   => $style,
-            'content' => $content,
-            'script'  => $script,
-        ]);
+        $previous = libxml_use_internal_errors(true);
+        $doc = new \DOMDocument();
+        // The XML encoding hint makes DOMDocument treat the input as UTF-8.
+        $doc->loadHTML('<?xml encoding="UTF-8">' . $html, LIBXML_NOERROR | LIBXML_NOWARNING);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        $xpath = new \DOMXPath($doc);
+
+        // content — inner HTML of the [data-spa-content] element
+        $contentNode = $xpath->query('//*[@data-spa-content]')->item(0);
+        if ($contentNode !== null) {
+            $inner = '';
+            foreach ($contentNode->childNodes as $child) {
+                $inner .= $doc->saveHTML($child);
+            }
+            $payload['content'] = trim($inner);
+        }
+
+        // styles (excluding the layout style)
+        $styles = [];
+        foreach ($xpath->query('//style[not(@data-spa-layout-style)]') as $style) {
+            $styles[] = $doc->saveHTML($style);
+        }
+        $payload['style'] = implode("\n", $styles);
+
+        // scripts (inline only, excluding the layout script)
+        $scripts = [];
+        foreach ($xpath->query('//script[not(@data-spa-layout-script) and not(@src)]') as $script) {
+            $scripts[] = $doc->saveHTML($script);
+        }
+        $payload['script'] = implode("\n", $scripts);
+
+        // title
+        $titleNode = $xpath->query('//title')->item(0);
+        if ($titleNode !== null) {
+            $payload['title'] = trim($titleNode->textContent);
+        }
+
+        return $payload;
     }
 }
